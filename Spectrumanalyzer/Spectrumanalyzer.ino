@@ -17,13 +17,15 @@
 #define xres        256   // Total number of  columns in the display, must be <= SAMPLES/2
 #define yres        200   // Total number of  rows in the display
 
+#define zeroPixelY  210   // At what pixel on the y axis are we at a value of 0
+
 #define refreshRate 1000  // The time to wait before updating the display after drawing a RAW graph
 
 MCUFRIEND_kbv tft;      // Display class object
 
 double vReal[SAMPLES];
 
-int scale;
+uint8_t scale;
 double sampleFreq;
 double peakFreq;
 
@@ -74,7 +76,7 @@ void setup()
   holdGraph = false;
   setScale(3);
 
-  ADMUX  = 0b01000110;      // use pin A06 and VCC for reference
+  ADMUX  = 0b00000110;      // use pin A06 and external reference voltage on AREF (5v)
 }
 
 void loop()
@@ -101,20 +103,70 @@ void ADCSample()
   if(!FFTOn)
     tti = SAMPLES / (SAMPLES / xres);
 
+  uint16_t tmpArray[SAMPLES] = {0};
+
   for(int i = 0; i < tti; i++)
   {
-    while(!(ADCSRA & 0x10));                  // wait for ADC to complete current conversion ie ADIF bit set
-    vReal[i] = ADC;                           // Read from ADC
+    while((ADCSRA & 0x10) == 0);              // wait for ADC to complete current conversion (ADIF bit set)
+    tmpArray[i] = ADC;                        // Read from ADC
     ADCSRA |= (1 << ADIF);                    // Sets the interrupt-flag, clearing the ADC
   }
 
   for(int i = 0; i < tti; i++)
-    vReal[i] -= 512;                          // subtract DC offset caused value
+    vReal[i] = (static_cast<float>(tmpArray[i]) - 512.0); // subtract DC bias and place in double array
+}
+
+void drawRaw()
+{
+  // If we are pausing / switching to FFT or switching scale then drop the current graph
+  if(holdGraph || FFTOn || dropGraph)
+  {
+    dropGraph = false;
+    return;
+  }
+    
+  drawingGraph = true;
+
+  tft.fillRect(0, 0, 256, 211, BLACK);
+
+  // ++ Draw grid on raw output
+  for(int i = 1; i < 256; i += 2)
+    for(int k = 1; k < 10; k++)
+      tft.drawPixel(i, k*21, GRAY);
+
+  for(int i = 1; i < 210; i += 2)
+    for(int k = 1; k < 12; k++)
+      tft.drawPixel((k*21)+1, i, GRAY);
+  // -- Draw grid on raw output
+
+  int yresHalf = yres / 2;
+  int zeroPixelYHalf = zeroPixelY / 2;
+
+  for(int i = 0; i < xres; i++)
+  {
+    vReal[i] = map(vReal[i], -511, 511, -yresHalf, yresHalf);       // remap values to yres
+    vReal[i] = constrain(vReal[i], -yresHalf, yresHalf);
+
+    // ++ Continous line graph
+    tft.drawPixel(i, zeroPixelYHalf - vReal[i], BLUE);
+    if(i > 0)
+      tft.drawLine(i - 1, zeroPixelYHalf - vReal[i - 1], i, zeroPixelYHalf - vReal[i], BLUE);
+    // -- Continous line graph
+
+    if(holdGraph || FFTOn)
+      break;
+    else if(dropGraph)
+    {
+      dropGraph = false;
+      break;
+    }
+  }
+
+  drawingGraph = false;
 }
 
 void computeFFT()
 {
-  // ++ Compute FFT
   double vImag[SAMPLES] = {0.0}; // Initialize and fill array with 0
   arduinoFFT FFT = arduinoFFT(vReal, vImag, SAMPLES, sampleFreq); // FFT object
 
@@ -123,7 +175,6 @@ void computeFFT()
   FFT.ComplexToMagnitude();
 
   peakFreq = FFT.MajorPeakParabola();
-  // -- FFT
 }
 
 void drawFFT()
@@ -145,10 +196,10 @@ void drawFFT()
   tft.fillRect(0, 0, 256, 211, BLACK);
   for(int i = 0; i < xres; i++)
   {
-    // squeeze down into a managable and displayable size (magnitutes are in the 5 digit numbers)
-    data_avgs[i] = map(data_avgs[i], 0, 100000, 0, yres);       // remap averaged values to yres
+    // squeeze down into a managable and displayable size (magnitutes are in the 5 digit range)
+    data_avgs[i] = map(data_avgs[i], 0, 65000, 0, yres);       // remap averaged values to yres
     data_avgs[i] = constrain(data_avgs[i], 0, yres);
-    tft.drawLine(i, 210-data_avgs[i], i, 210, RED);
+    tft.drawLine(i, zeroPixelY-data_avgs[i], i, zeroPixelY, RED);
   }
 
   tft.setTextColor(RED);
@@ -161,70 +212,29 @@ void drawFFT()
   tft.setTextSize(1);
 }
 
-void drawRaw()
-{
-  // If we are pausing / switching to FFT or switching scale then drop the current graph
-  if(holdGraph || FFTOn ||dropGraph)
-  {
-    dropGraph = false;
-    return;
-  }
-    
-  drawingGraph = true;
-
-  tft.fillRect(0, 0, 256, 211, BLACK);
-
-  // ++ Draw grid on raw output
-  for(int i = 1; i < 256; i += 2)
-    for(int k = 1; k < 10; k++)
-      tft.drawPixel(i, k*21, GRAY);
-
-  for(int i = 1; i < 210; i += 2)
-    for(int k = 1; k < 12; k++)
-      tft.drawPixel((k*21)+1, i, GRAY);
-  // -- Draw grid on raw output
-
-  int yresHalf = yres/2;
-
-  for(int i = 0; i < xres; i++)
-  {
-    vReal[i] = map(vReal[i], -511, 511, -yresHalf, yresHalf);       // remap values to yres
-    vReal[i] = constrain(vReal[i], -yresHalf, yresHalf);
-
-    // ++ Continous line graph
-    tft.drawPixel(i, 105 - vReal[i], BLUE);
-    if(i > 0)
-      tft.drawLine(i - 1, 105 - vReal[i - 1], i, 105 - vReal[i], BLUE);
-    // -- Continous line graph
-
-    if(holdGraph || FFTOn)
-      break;
-    else if(dropGraph)
-    {
-      dropGraph = false;
-      break;
-    }
-  }
-
-  drawingGraph = false;
-}
-
-void setScale(int value)
+void setScale(uint8_t value)
 {
   // Clear the lower right-hand corner, the lower bar and the right-hand side
   tft.fillRect(0, 213, 256, 36, BLACK);
   tft.fillRect(258, 213, 61, 36, BLACK);
   tft.fillRect(260, 0, 61, 210, BLACK);
+  tft.setTextColor(WHITE);
 
   scale = value;
-  int preScale;
-
-  tft.setTextColor(WHITE);
+  uint8_t preScale;
 
   ADCSRA |= (1 << ADEN);    // ADEN: ADC-disable
 
   switch(scale)
   {
+    case 7:
+      preScale = 2;
+      ADCSRA = 0b11100001;      // ADEN; ADC-enable, ADSC; Start ADC conversion, ADATE; ADC Auto Trigger-enable, use a division factor of 2
+      break;
+    case 6:
+      preScale = 4;
+      ADCSRA = 0b11100010;      // ADEN; ADC-enable, ADSC; Start ADC conversion, ADATE; ADC Auto Trigger-enable, use a division factor of 4
+      break;
     case 5:
       preScale = 8;
       ADCSRA = 0b11100011;      // ADEN; ADC-enable, ADSC; Start ADC conversion, ADATE; ADC Auto Trigger-enable, use a division factor of 8
@@ -263,6 +273,10 @@ void setScale(int value)
       k = 2.0;
     else if(scale == 5)
       k = 4.0;
+    else if(scale == 6)
+      k = 8.0;
+    else if(scale == 6)
+      k = 16.0;
 
     tft.setCursor(8, 220);
     tft.print(1.0 * k, 1);
@@ -381,7 +395,7 @@ void toggleScale()
   // Don't react until the button is released again
   do { ; } while ( digitalRead(21) == LOW );
 
-  if(scale <= 4)
+  if(scale <= 6)
     setScale(scale + 1);
   else
     setScale(1);
