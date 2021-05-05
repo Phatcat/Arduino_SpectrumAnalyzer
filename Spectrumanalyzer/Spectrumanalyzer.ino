@@ -11,15 +11,15 @@
 #define WHITE   0xFFFF
 #define GRAY    0xC618
 
-#define CLKSPEED 16000000 // 16 MHz clock-speed
+#define HALFCLOCK  42000000
 
-#define SAMPLES     512   // Must be a power of 2
-#define xres        256   // Total number of  columns in the display, must be <= SAMPLES/2
-#define yres        200   // Total number of  rows in the display
+#define SAMPLES    4096   // Must be a power of 2
+#define xres        256   // Total number of columns in the display, must be <= SAMPLES/2
+#define yres        200   // Total number of rows in the display
 
 #define zeroPixelY  210   // At what pixel on the y axis are we at a value of 0
 
-#define refreshRate 1000  // The time to wait before updating the display after drawing a RAW graph
+#define refreshRate 1000  // The time to wait before updating the display after drawing a graph
 
 MCUFRIEND_kbv tft;      // Display class object
 
@@ -41,15 +41,15 @@ void setup()
 
   // Set up Hold/Go function and attach it to a custom interrupt service routine
   pinMode(19, INPUT_PULLUP);
-  attachInterrupt(digitalPinToInterrupt(19), toggleHold, FALLING);
+  attachInterrupt(19, toggleHold, FALLING);
 
   // Set up FFT on/off function and attach it to a custom interrupt service routine
   pinMode(20, INPUT_PULLUP);
-  attachInterrupt(digitalPinToInterrupt(20), toggleFFT, FALLING);
+  attachInterrupt(20, toggleFFT, FALLING);
 
   // Set up Scaling function and attach it to a custom interrupt service routine
   pinMode(21, INPUT_PULLUP);
-  attachInterrupt(digitalPinToInterrupt(21), toggleScale, FALLING);
+  attachInterrupt(21, toggleScale, FALLING);
 
   // Set rotation (0 - 3, portrait, landscape, rev. portait, rev. landscape)
   tft.setRotation(1);
@@ -72,11 +72,9 @@ void setup()
     tft.drawPixel(258, (i * 7), WHITE);
   /********************************************/
 
-  FFTOn = false;
+  FFTOn = true;
   holdGraph = false;
-  setScale(3);
-
-  ADMUX  = 0b00000110;      // use pin A06 and external reference voltage on AREF (5v)
+  setScale(2);
 }
 
 void loop()
@@ -92,9 +90,21 @@ void loop()
     else
     {
       drawRaw();
-      delay(refreshRate);
     }
+
+    delay(refreshRate);
   }
+}
+
+void ADCSetup(unsigned long ADCClock)
+{
+  adc_init(ADC, SystemCoreClock, ADCClock, ADC_STARTUP_FAST);
+
+  ADC->ADC_MR |= 0x80;    // Set the ADC to free-running mode
+
+  ADC->ADC_CHER = 0x02;  // Enable the ADC on analog pin 6 (ADC channel 1, check due diagram for ref.)
+
+  ADC->ADC_CR |= 0x02;    // Start ADC sampling
 }
 
 void ADCSample()
@@ -107,13 +117,12 @@ void ADCSample()
 
   for(int i = 0; i < tti; i++)
   {
-    while((ADCSRA & 0x10) == 0);              // wait for ADC to complete current conversion (ADIF bit set)
-    tmpArray[i] = ADC;                        // Read from ADC
-    ADCSRA |= (1 << ADIF);                    // Sets the interrupt-flag, clearing the ADC
+    while((ADC->ADC_ISR & 0x02) == 0);   // Wait for ADC to complete current conversion on AD channel 1
+    tmpArray[i] = ADC->ADC_CDR[1];       // Read the conversion result on the AD channel 1 conversion results register
   }
 
   for(int i = 0; i < tti; i++)
-    vReal[i] = (static_cast<float>(tmpArray[i]) - 512.0); // subtract DC bias and place in double array
+    vReal[i] = (static_cast<float>(tmpArray[i]) - 2048.0); // subtract DC bias and place in double array
 }
 
 void drawRaw()
@@ -124,7 +133,7 @@ void drawRaw()
     dropGraph = false;
     return;
   }
-    
+
   drawingGraph = true;
 
   tft.fillRect(0, 0, 256, 211, BLACK);
@@ -144,7 +153,8 @@ void drawRaw()
 
   for(int i = 0; i < xres; i++)
   {
-    vReal[i] = map(vReal[i], -511, 511, -yresHalf, yresHalf);       // remap values to yres
+    //Serial.println(vReal[i]);
+    vReal[i] = map(vReal[i], -2047, 2047, -yresHalf, yresHalf);       // remap values to yres
     vReal[i] = constrain(vReal[i], -yresHalf, yresHalf);
 
     // ++ Continous line graph
@@ -167,6 +177,7 @@ void drawRaw()
 
 void computeFFT()
 {
+  // ++ Compute FFT
   double vImag[SAMPLES] = {0.0}; // Initialize and fill array with 0
   arduinoFFT FFT = arduinoFFT(vReal, vImag, SAMPLES, sampleFreq); // FFT object
 
@@ -175,6 +186,7 @@ void computeFFT()
   FFT.ComplexToMagnitude();
 
   peakFreq = FFT.MajorPeakParabola();
+  // -- FFT
 }
 
 void drawFFT()
@@ -197,7 +209,7 @@ void drawFFT()
   for(int i = 0; i < xres; i++)
   {
     // squeeze down into a managable and displayable size (magnitutes are in the 5 digit range)
-    data_avgs[i] = map(data_avgs[i], 0, 65000, 0, yres);       // remap averaged values to yres
+    data_avgs[i] = map(data_avgs[i], 0, 165000UL, 0, yres);       // remap averaged values to yres
     data_avgs[i] = constrain(data_avgs[i], 0, yres);
     tft.drawLine(i, zeroPixelY-data_avgs[i], i, zeroPixelY, RED);
   }
@@ -205,8 +217,18 @@ void drawFFT()
   tft.setTextColor(RED);
   tft.setTextSize(2);
   tft.setCursor(0, 0);
-  tft.print(peakFreq);
-  tft.print(" Hz");
+
+  if(peakFreq >= 1000.0)
+  {
+    peakFreq /= 1000.0;
+    tft.print(peakFreq);
+    tft.print(" kHz");
+  }
+  else
+  {
+    tft.print(peakFreq);
+    tft.print(" Hz");
+  }
 
   // Set text size back to normal
   tft.setTextSize(1);
@@ -222,61 +244,65 @@ void setScale(uint8_t value)
 
   scale = value;
   uint8_t preScale;
-
-  ADCSRA |= (1 << ADEN);    // ADEN: ADC-disable
+  bool specialCase = false;
 
   switch(scale)
   {
-    case 7:
+    case 9:
+      preScale = 1;       // Special case, running the ADC in an unsafe/unstable way (but with a sample rate upwards of 1.9 MSPS!)
+      specialCase = true;
+      break;
+    case 8:
       preScale = 2;
-      ADCSRA = 0b11100001;      // ADEN; ADC-enable, ADSC; Start ADC conversion, ADATE; ADC Auto Trigger-enable, use a division factor of 2
+      break;
+    case 7:
+      preScale = 4;
       break;
     case 6:
-      preScale = 4;
-      ADCSRA = 0b11100010;      // ADEN; ADC-enable, ADSC; Start ADC conversion, ADATE; ADC Auto Trigger-enable, use a division factor of 4
+      preScale = 8;
       break;
     case 5:
-      preScale = 8;
-      ADCSRA = 0b11100011;      // ADEN; ADC-enable, ADSC; Start ADC conversion, ADATE; ADC Auto Trigger-enable, use a division factor of 8
+      preScale = 16;
       break;
     case 4:
-      preScale = 16;
-      ADCSRA = 0b11100100;      // ADEN; ADC-enable, ADSC; Start ADC conversion, ADATE; ADC Auto Trigger-enable, use a division factor of 16
-      break;
-    case 3:
       preScale = 32;
-      ADCSRA = 0b11100101;      // ADEN; ADC-enable, ADSC; Start ADC conversion, ADATE; ADC Auto Trigger-enable, use a division factor of 32
       break;
     case 2:
       preScale = 64;
-      ADCSRA = 0b11100110;      // ADEN; ADC-enable, ADSC; Start ADC conversion, ADATE; ADC Auto Trigger-enable, use a division factor of 64
       break;
     case 1:
       preScale = 128;
-      ADCSRA = 0b11100111;      // ADEN; ADC-enable, ADSC; Start ADC conversion, ADATE; ADC Auto Trigger-enable, use a division factor of 128
       break;
     default:                    // Should never reach the default case
       break;
   }
 
-  // Used for calculating peak frequency in FFT output and seconds per square in RAW output
-  sampleFreq = static_cast<float>(CLKSPEED) / (static_cast<float>(preScale) * 13.0);         // (16MHz clock-speed / the divisionFactor of preScale Further divided by 13.5 clock cycles it takes per ADC conversion)
+  float tmpFreqVal = static_cast<float>(HALFCLOCK) / static_cast<float>(preScale);
 
+  ADCSetup(tmpFreqVal);
+
+  // (84 MHz clock-speed, 42MHz halfclock (forced divisionFactor of 4, but we can circumvent it), 21 clock cycles per conversion)
+  sampleFreq = (specialCase ? (tmpFreqVal / 22.0) : (tmpFreqVal / 21.0));
+  
   if(FFTOn) // Displaying FFT
   {
     float k = 1.0;
     if(scale == 1)
-      k = 0.25;
-    else if(scale == 2)
       k = 0.5;
-    else if(scale == 4)
+    else if(scale == 3)
       k = 2.0;
-    else if(scale == 5)
+    else if(scale == 4)
       k = 4.0;
-    else if(scale == 6)
+    else if(scale == 5)
       k = 8.0;
     else if(scale == 6)
       k = 16.0;
+    else if(scale == 7)
+      k = 32.0;
+    else if(scale == 8)
+      k = 64.0;
+    else if(scale == 9)
+      k = 128.0;
 
     tft.setCursor(8, 220);
     tft.print(1.0 * k, 1);
@@ -340,14 +366,14 @@ void setScale(uint8_t value)
     for(int i = 1; i < 10; i++)
     {
       tft.setCursor(265, (i * 21) - 3);
-      tft.print(2.5 - (static_cast<float>(i) * 0.5), 1);
+      tft.print(1.67 - (static_cast<float>(i) * 0.33), 1);
 
       if(i == 5)
         tft.print(" Volt");
     }
 
     /*********** Convert the sample rate into samples per square and display it *************/
-    float samplesPerSq = (1.0 / sampleFreq) * ((static_cast<float>(SAMPLES) / 2.0) / 12);
+    float samplesPerSq = (1.0 / sampleFreq) * ((static_cast<float>(SAMPLES) / 2.0) / 12.0);
 
     tft.setCursor(105, 225);
     
@@ -366,8 +392,17 @@ void setScale(uint8_t value)
     /****************************************************************************************/
 
     tft.setCursor(260, 225);
-    tft.print(sampleFreq / 1000.0);
-    tft.print("kS/s");
+
+    if(sampleFreq >= 1000000.0)
+    {
+      tft.print(sampleFreq / 1000000.0);
+      tft.print("MS/s");
+    }
+    else
+    {
+      tft.print(sampleFreq / 1000.0);
+      tft.print("kS/s");
+    }
   }
 
   dropGraph = true;
@@ -375,16 +410,20 @@ void setScale(uint8_t value)
 
 void toggleHold()
 {
-  // Don't react until the button is released again
-  do { ; } while ( digitalRead(19) == LOW );
+  while(digitalRead(19) == LOW) {};    // Wait for the button to be released
+
+  // switch-button debounce
+  // delay(50);
 
   holdGraph = !holdGraph;
 }
 
 void toggleFFT()
 {
-  // Don't react until the button is released again
-  do { ; } while ( digitalRead(20) == LOW );
+  while(digitalRead(20) == LOW) {};    // Wait for the button to be released
+
+  // switch-button debounce
+  // delay(50);
 
   FFTOn = !FFTOn;
   setScale(scale);
@@ -392,10 +431,12 @@ void toggleFFT()
 
 void toggleScale()
 {
-  // Don't react until the button is released again
-  do { ; } while ( digitalRead(21) == LOW );
+  while(digitalRead(21) == LOW) {};    // Wait for the button to be released
 
-  if(scale <= 6)
+  // switch-button debounce
+  // delay(50);
+
+  if(scale <= 8)
     setScale(scale + 1);
   else
     setScale(1);
