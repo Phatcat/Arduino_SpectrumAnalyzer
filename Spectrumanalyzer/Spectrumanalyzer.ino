@@ -11,7 +11,8 @@
 #define WHITE   0xFFFF
 #define GRAY    0xC618
 
-#define HALFCLOCK  42000000
+#define HALFCLOCK  42000000 // Half the clock cycle of the Arduino Due
+#define debounceDelay  5000 // debounce delay in microseconds
 
 #define SAMPLES    4096   // Must be a power of 2
 #define xres        256   // Total number of columns in the display, must be <= SAMPLES/2
@@ -410,20 +411,16 @@ void setScale(uint8_t value)
 
 void toggleHold()
 {
-  while(digitalRead(19) == LOW) {};    // Wait for the button to be released
-
-  // switch-button debounce
-  // delay(50);
+  do{delayMicroseconds(debounceDelay);} // Software debounce delay on both press and release
+    while(digitalRead(19) == LOW);      // Wait for the button to be released
 
   holdGraph = !holdGraph;
 }
 
 void toggleFFT()
 {
-  while(digitalRead(20) == LOW) {};    // Wait for the button to be released
-
-  // switch-button debounce
-  // delay(50);
+  do{delayMicroseconds(debounceDelay);} // Software debounce delay on both press and release
+    while(digitalRead(20) == LOW);      // Wait for the button to be released
 
   FFTOn = !FFTOn;
   setScale(scale);
@@ -431,10 +428,8 @@ void toggleFFT()
 
 void toggleScale()
 {
-  while(digitalRead(21) == LOW) {};    // Wait for the button to be released
-
-  // switch-button debounce
-  // delay(50);
+  do{delayMicroseconds(debounceDelay);} // Software debounce delay on both press and release
+    while(digitalRead(21) == LOW);      // Wait for the button to be released
 
   if(scale <= 8)
     setScale(scale + 1);
